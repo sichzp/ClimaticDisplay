@@ -2,6 +2,32 @@
 
 > **Климатический модуль с 4-цветным графическим экраном на электронных чернилах.**
 
+**🇬🇧 [English (short)](#english-short)** · **🇷🇺 Русский — далее по документу**
+
+---
+
+## English (short)
+
+**ClimaticDisplay 2.66G** is a self-powered wall-mounted climate monitor. An
+**ESP32-C3** wakes up every 20 minutes from a **TPL5110** power timer, reads
+temperature, humidity and atmospheric pressure from a **BME280**, keeps the time
+and the previous readings in a **DS1307Z** RTC, redraws a 2.66" 4-color e-paper
+screen and cuts its own power. It runs for months on two LiFePO4 cells.
+
+Two firmwares share the same hardware: `ESP32-C3/` is a standalone Arduino build
+with NTP time sync, while `ForESPHome/` is an ESPHome + Home Assistant build that
+reports data to HA and refreshes the screen only when someone is at home.
+Schematics, photos and full documentation are below, in Russian.
+
+> **Note:** the device UI and all code comments are in **Russian**. Cyrillic glyphs
+> are baked into the fonts (`ESP32-C3/fonts/*.h`, `ForESPHome/fonts/FreeSansBold.ttf`
+> and the `glyphs:` lists in `ForESPHome/RoomClimatic.yaml`), so an English UI would
+> require regenerating them. Translations are welcome.
+
+---
+
+## Описание прибора
+
 Автономный настенный прибор на базе **ESP32-C3**: измеряет температуру, влажность и атмосферное давление, раз в 20 минут просыпается по таймеру, рисует свежие данные на e-paper дисплее и снова отключает питание. Работает от пары LiFePO4 аккумуляторов.
 
 Существует в двух вариантах с одинаковым железом, но разным ПО:
