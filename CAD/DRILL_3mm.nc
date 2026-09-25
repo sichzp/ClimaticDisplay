@@ -1,0 +1,68 @@
+(Exported by FreeCAD)
+(Post Processor: grbl_post)
+(Output Time:2026-08-30 18:29:23.882910)
+(Begin preamble)
+G17 G90
+G21
+(Begin operation: Fixture)
+(Path: Fixture)
+G54
+(Finish operation: Fixture)
+(Begin operation: TC: Сверло 3,0 мм)
+(Path: TC: Сверло 3,0 мм)
+(TC: Сверло 3,0 мм)
+(Begin toolchange)
+( M6 T28 )
+M3 S12000
+(Finish operation: TC: Сверло 3,0 мм)
+(Begin operation: Drilling004)
+(Path: Drilling004)
+(Drilling004)
+(Begin Drilling)
+G90
+G0 Z6.000
+( G98 )
+G0 X3.500 Y3.500
+G0 Z4.000
+(G81 X3.500 Y3.500 Z-2.500 F30.000 R3.500)
+G0 X3.500 Y3.500
+G0 Z3.500
+G1 Z-2.500 F30.00
+G0 Z4.000
+G0 X3.040 Y10.007
+(G81 X3.040 Y10.007 Z-2.500 F30.000 R3.500)
+G0 X3.040 Y10.007
+G0 Z3.500
+G1 Z-2.500 F30.00
+G0 Z4.000
+G0 X3.040 Y25.907
+(G81 X3.040 Y25.907 Z-2.500 F30.000 R3.500)
+G0 X3.040 Y25.907
+G0 Z3.500
+G1 Z-2.500 F30.00
+G0 Z4.000
+G0 X3.500 Y36.000
+(G81 X3.500 Y36.000 Z-2.500 F30.000 R3.500)
+G0 X3.500 Y36.000
+G0 Z3.500
+G1 Z-2.500 F30.00
+G0 Z4.000
+G0 X81.500 Y36.000
+(G81 X81.500 Y36.000 Z-2.500 F30.000 R3.500)
+G0 X81.500 Y36.000
+G0 Z3.500
+G1 Z-2.500 F30.00
+G0 Z4.000
+G0 X81.500 Y3.500
+(G81 X81.500 Y3.500 Z-2.500 F30.000 R3.500)
+G0 X81.500 Y3.500
+G0 Z3.500
+G1 Z-2.500 F30.00
+G0 Z4.000
+( G80 )
+G0 Z6.000
+(Finish operation: Drilling004)
+(Begin postamble)
+M5
+G17 G90
+M2

@@ -1,0 +1,533 @@
+# =============================================================================
+# RoomClimatic — домашняя версия ClimaticDisplay 2.66G на ESPHome
+# =============================================================================
+# Плата: ESP32-C3 Super Mini
+# Железо: то же, что у рабочей версии (Arduino), см. ../ReadMe.md
+#   - дисплей GDEY0266F51H 2.66" 4-цветный (кастомный компонент components/)
+#   - BME280 (I2C 0x76) + DS1307Z (I2C 0x68)
+#   - АКБ LiFePO4 3,2В, АЦП GPIO0 (делитель, коэффициент 3.3)
+#   - TPL5110: будит прибор каждые 20 минут, GPIO10 = DONE (выключение)
+#
+# Логика работы (скрипт Execute_and_off, запускается после загрузки):
+#   1. Ждём соединения с сервером Home Assistant и валидного времени.
+#   2. Синхронизируем DS1307: есть связь — пишем время сервера в МС,
+#      нет связи — берём время из МС (автономный режим).
+#   3. Измеряем датчики и передаём данные на сервер ВСЕГДА,
+#      даже ночью и когда никого нет дома.
+#   4. Экран обновляем, только если: не ночь (23:00–04:00),
+#      дома кто-то есть (input_boolean.people_at_home) и время валидно.
+#   5. Выключаем питание сигналом TPL5110, кроме режима ожидания
+#      прошивки (input_boolean.esphome_stay_awake — для OTA-обновления).
+#
+# Перед загрузкой на сервер в папку с этим файлом положить:
+#   - папку components/ (драйвер дисплея);
+#   - папку img/ (иконки, генерируются скриптом tools/convert_icons.py);
+#   - папку fonts/ (FreeSansBold.ttf — тот же шрифт, что в Arduino-версии);
+#   - secrets.yaml с ключами:
+#       wifi_ssid, wifi_password  — доступ к домашней сети;
+#       api_encryption_key        — ключ шифрования API (сгенерировать заново
+#                                   или взять прежний, чтобы не перепривязывать
+#                                   прибор в Home Assistant);
+#       ap_password               — пароль резервной точки доступа прибора.
+# В репозиторий secrets.yaml не попадает (см. .gitignore).
+# =============================================================================
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+esphome:
+  name: roomclimatic
+  friendly_name: RoomClimatic
+  platformio_options:
+    board_build.f_flash: 40000000L
+    board_build.flash_mode: dio
+    board_build.flash_size: 4MB
+  on_boot:
+    priority: 300
+    then:
+      - delay: 10s
+      - script.execute: Execute_and_off
+
+esp32:
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: RoomClimatic Fallback Hotspot
+    password: !secret ap_password
+
+captive_portal:
+
+# ---------------------------------------------------------------------------
+# Шины: I2C (BME280 + DS1307) и SPI (дисплей)
+# ---------------------------------------------------------------------------
+i2c:
+  id: i2c_bus
+  sda: GPIO8
+  scl: GPIO9
+  frequency: 100kHz
+  scan: false
+
+spi:
+  clk_pin: GPIO4
+  mosi_pin: GPIO6
+
+# ---------------------------------------------------------------------------
+# Время: основное - с сервера Home Assistant, резервное - из DS1307Z.
+# Часы МС хранят местное время (UTC+3, без перехода на летнее время).
+# ---------------------------------------------------------------------------
+time:
+  - platform: ds1307_local
+    id: rtc_time
+    address: 0x68
+    i2c_id: i2c_bus
+    timezone: "MSK-3"
+    update_interval: never  # читаем вручную действием ds1307_local.read_time
+  - platform: homeassistant
+    id: MyDateTime
+    update_interval: 10s   # чтобы успеть синхронизироваться за короткое включение
+
+# ---------------------------------------------------------------------------
+# Датчики
+# ---------------------------------------------------------------------------
+sensor:
+  # BME280: температура, влажность, атмосферное давление
+  - platform: bme280_i2c
+    address: 0x76
+    i2c_id: i2c_bus
+    id: bme280_component
+    update_interval: never  # измеряем только по команде из скрипта
+    temperature:
+      name: "Temperature"
+      id: bme_temperature
+      oversampling: 2x
+    pressure:
+      name: "Pressure"
+      id: bme_pressure
+      oversampling: 2x
+    humidity:
+      name: "Humidity"
+      id: bme_humidity
+      oversampling: 1x
+    iir_filter: "OFF"
+
+  # Давление в мм.рт.ст. (для экрана; на экране Arduino было целое число)
+  - platform: template
+    id: bme_pressure_mmhg
+    name: "Pressure mmHg"
+    unit_of_measurement: "mmHg"
+    accuracy_decimals: 0
+    update_interval: never
+    lambda: |-
+      return id(bme_pressure).state;
+    filters:
+      - multiply: 0.75006
+
+  # Напряжение АКБ: АЦП GPIO0, на плате стоит делитель, коэффициент 3.3
+  - platform: adc
+    pin: GPIO0
+    id: battery_voltage
+    name: "Battery Voltage"
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    update_interval: never
+    filters:
+      - multiply: 3.3
+
+  # Уровень сигнала Wi-Fi (диагностика)
+  - platform: wifi_signal
+    id: wifi_signal_db
+    update_interval: never
+    entity_category: diagnostic
+    internal: true
+  - platform: copy
+    source_id: wifi_signal_db
+    id: wifi_signal_percent
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: diagnostic
+    internal: true
+
+# ---------------------------------------------------------------------------
+# Флаги режимов с сервера Home Assistant
+# ---------------------------------------------------------------------------
+binary_sensor:
+  - platform: homeassistant
+    id: NoPowerOff
+    entity_id: input_boolean.esphome_stay_awake
+    internal: true
+  - platform: homeassistant
+    id: people_at_home
+    entity_id: input_boolean.people_at_home
+    internal: true
+
+# ---------------------------------------------------------------------------
+# Выключение питания (сигнал DONE для TPL5110)
+# ---------------------------------------------------------------------------
+output:
+  - platform: gpio
+    id: gpio_done
+    pin:
+      number: GPIO10
+      inverted: false
+
+switch:
+  - platform: output
+    internal: true
+    restore_mode: ALWAYS_OFF
+    id: Done_Out
+    output: gpio_done
+
+# ---------------------------------------------------------------------------
+# Старые значения датчиков (читаются из RAM DS1307) — для стрелок ↑/↓
+# ---------------------------------------------------------------------------
+globals:
+  - id: old_temperature
+    type: float
+    restore_value: false
+    initial_value: '0'
+  - id: old_humidity
+    type: float
+    restore_value: false
+    initial_value: '0'
+  - id: old_pressure
+    type: float
+    restore_value: false
+    initial_value: '0'
+  - id: has_old_data
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+# ---------------------------------------------------------------------------
+# Шрифты и картинки
+# Шрифты - FreeSans Bold (GNU FreeFont), те же, что в Arduino-версии:
+#   там 24pt7b = 48px, 10pt8b = 20px, 8pt8b = 16px (1pt = 2px у truetype2gfx)
+# ---------------------------------------------------------------------------
+font:
+  - file: "fonts/FreeSansBold.ttf"
+    id: f_big
+    size: 48   # значения температуры/влажности/давления (24pt в Arduino)
+    glyphs: "0123456789.,-"
+  - file: "fonts/FreeSansBold.ttf"
+    id: f_mid
+    size: 20   # надписи, ошибки, напряжение АКБ (10pt в Arduino)
+    glyphs: "0123456789 .,:-!|BEFMTWtAOОбновлеиыУдачгяшкВНтрм"
+  - file: "fonts/FreeSansBold.ttf"
+    id: f_small
+    size: 16   # дата и время в шапке (8pt в Arduino)
+    glyphs: "0123456789 :-."
+
+image:
+  - file: "img/arrow_up.bmp"
+    id: img_arrow_up
+    type: RGB565
+  - file: "img/arrow_down.bmp"
+    id: img_arrow_down
+    type: RGB565
+  - file: "img/thermo_bw.bmp"
+    id: img_thermo_bw
+    type: RGB565
+  - file: "img/thermo_min.bmp"
+    id: img_thermo_min
+    type: RGB565
+  - file: "img/thermo_norm.bmp"
+    id: img_thermo_norm
+    type: RGB565
+  - file: "img/thermo_max.bmp"
+    id: img_thermo_max
+    type: RGB565
+  - file: "img/humidity_bw.bmp"
+    id: img_humidity_bw
+    type: RGB565
+  - file: "img/humidity_norm.bmp"
+    id: img_humidity_norm
+    type: RGB565
+  - file: "img/humidity_max.bmp"
+    id: img_humidity_max
+    type: RGB565
+  - file: "img/pressure_bw.bmp"
+    id: img_pressure_bw
+    type: RGB565
+  - file: "img/pressure_min.bmp"
+    id: img_pressure_min
+    type: RGB565
+  - file: "img/pressure_norm.bmp"
+    id: img_pressure_norm
+    type: RGB565
+  - file: "img/pressure_max.bmp"
+    id: img_pressure_max
+    type: RGB565
+  - file: "img/battery_full.bmp"
+    id: img_battery_full
+    type: RGB565
+  - file: "img/battery_half.bmp"
+    id: img_battery_half
+    type: RGB565
+  - file: "img/battery_min.bmp"
+    id: img_battery_min
+    type: RGB565
+
+color:
+  - id: black
+    hex: "000000"
+  - id: white
+    hex: "FFFFFF"
+  - id: red
+    hex: "FF0000"
+  - id: yellow
+    hex: "FFFF00"
+
+# ---------------------------------------------------------------------------
+# Дисплей: кастомный драйвер GDEY0266F51H (см. components/gdey0266f51h)
+# BUSY у панели активен низким уровнем, поэтому inverted: true.
+# Нативные координаты панели 184x360 (портрет), поворот на 90° даёт 360x184.
+# ---------------------------------------------------------------------------
+display:
+  - platform: gdey0266f51h
+    id: my_display
+    cs_pin: GPIO7
+    dc_pin: GPIO3
+    reset_pin: GPIO2
+    busy_pin:
+      number: GPIO1
+      inverted: true
+    rotation: 90°
+    update_interval: never
+    lambda: |-
+      auto now = id(MyDateTime).now();
+      float temp = id(bme_temperature).state;
+      float hum = id(bme_humidity).state;
+      float press = id(bme_pressure_mmhg).state;
+      float batt = id(battery_voltage).state;
+
+      // Фон
+      it.filled_rectangle(0, 0, 360, 184, id(white));
+
+      // Верхний колонтитул
+      it.filled_rectangle(0, 0, 360, 20, id(yellow));
+      it.filled_rectangle(0, 21, 360, 3, id(black));
+      if (now.is_valid()) {
+        // Базовая линия как в Arduino (16), для ESPHome: y = 16 - baseline шрифта
+        // (baseline: f_mid = 18, f_small = 15 - берётся из сгенерированных метрик FreeSansBold)
+        it.print(3, -2, id(f_mid), id(black), "Обновление было в: ");
+        it.strftime(213, 1, id(f_small), id(red), "%H:%M  %d-%m-%Y", now);
+      } else {
+        it.print(3, -2, id(f_mid), id(red), "Нет времени!");
+      }
+
+      // Окно температуры
+      if (std::isnan(temp))
+        it.image(1, 25, id(img_thermo_bw));
+      else if (temp < 18.0f)
+        it.image(1, 25, id(img_thermo_min));
+      else if (temp < 28.0f)
+        it.image(1, 25, id(img_thermo_norm));
+      else
+        it.image(1, 25, id(img_thermo_max));
+      if (!std::isnan(temp) && id(has_old_data)) {
+        if (temp < id(old_temperature))
+          it.image(74, 80, id(img_arrow_down));
+        else if (temp > id(old_temperature))
+          it.image(74, 80, id(img_arrow_up));
+      }
+      if (std::isnan(temp))
+        it.print(8, 104, id(f_big), id(black), "--.-");
+      else
+        it.printf(8, 104, id(f_big), id(black), "%.1f", temp);
+
+      // Первый разделитель
+      it.filled_rectangle(116, 24, 2, 137, id(black));
+      it.filled_rectangle(118, 24, 3, 137, id(yellow));
+      it.filled_rectangle(120, 24, 2, 137, id(black));
+
+      // Окно влажности
+      if (std::isnan(hum))
+        it.image(123, 25, id(img_humidity_bw));
+      else if (hum > 50.0f)
+        it.image(123, 25, id(img_humidity_max));
+      else if (hum > 35.0f)
+        it.image(123, 25, id(img_humidity_norm));
+      else
+        it.image(123, 25, id(img_humidity_bw));
+      if (!std::isnan(hum) && id(has_old_data)) {
+        if (hum < id(old_humidity))
+          it.image(196, 80, id(img_arrow_down));
+        else if (hum > id(old_humidity))
+          it.image(196, 80, id(img_arrow_up));
+      }
+      if (std::isnan(hum))
+        it.print(132, 104, id(f_big), id(black), "--.-");
+      else
+        it.printf(132, 104, id(f_big), id(black), "%.1f", hum);
+
+      // Второй разделитель
+      it.filled_rectangle(238, 24, 2, 137, id(black));
+      it.filled_rectangle(240, 24, 3, 137, id(yellow));
+      it.filled_rectangle(242, 24, 2, 137, id(black));
+
+      // Окно атмосферного давления
+      if (std::isnan(press))
+        it.image(245, 25, id(img_pressure_bw));
+      else if (press < 740.0f)
+        it.image(245, 25, id(img_pressure_min));
+      else if (press < 780.0f)
+        it.image(245, 25, id(img_pressure_norm));
+      else
+        it.image(245, 25, id(img_pressure_max));
+      if (!std::isnan(press) && id(has_old_data)) {
+        if (press < id(old_pressure))
+          it.image(317, 80, id(img_arrow_down));
+        else if (press > id(old_pressure))
+          it.image(317, 80, id(img_arrow_up));
+      }
+      if (std::isnan(press))
+        it.print(257, 104, id(f_big), id(black), "---");
+      else
+        it.printf(257, 104, id(f_big), id(black), "%.0f", press);
+
+      // Нижний колонтитул
+      it.filled_rectangle(0, 161, 360, 3, id(black));
+      it.filled_rectangle(0, 164, 360, 20, id(yellow));
+
+      // Строка ошибок (по аналогии с Arduino-версией)
+      std::string errors;
+      if (!now.is_valid()) errors += "|TM| ";
+      if (std::isnan(temp)) errors += "|BME| ";
+      if (!std::isnan(batt) && batt < 2.5f) errors += "|Bt| ";
+      if (!api_is_connected()) errors += "|WF| ";
+      if (id(NoPowerOff).state) errors += "|OTA| ";
+      if (errors.empty()) {
+        it.print(50, 162, id(f_mid), id(red), "Удачного дня!!! ");
+      } else {
+        it.print(3, 162, id(f_mid), id(black), "Ошибки: ");
+        it.print(95, 162, id(f_mid), id(red), errors.c_str());
+      }
+
+      // Значок батарейки и напряжение
+      if (!std::isnan(batt)) {
+        if (batt >= 3.1f)
+          it.image(260, 165, id(img_battery_full));
+        else if (batt <= 3.0f)
+          it.image(260, 165, id(img_battery_min));
+        else
+          it.image(260, 165, id(img_battery_half));
+        it.printf(310, 162, id(f_mid), id(black), "%.1f В", batt);
+      }
+
+# ---------------------------------------------------------------------------
+# Основной сценарий: работа и выключение
+# ---------------------------------------------------------------------------
+script:
+  - id: Execute_and_off
+    then:
+      # 1. Ждём валидного времени и соединения с сервером
+      - if:
+          condition:
+            lambda: 'return !(id(MyDateTime).now().is_valid() && api_is_connected());'
+          then:
+            - logger.log: "Ждём соединения с сервером и синхронизации времени..."
+            - wait_until:
+                condition:
+                  lambda: 'return id(MyDateTime).now().is_valid() && api_is_connected();'
+                timeout: 120s
+      # 2. Синхронизация часов DS1307
+      - if:
+          condition:
+            lambda: 'return id(MyDateTime).now().is_valid();'
+          then:
+            - logger.log: "Время получено от сервера. Записываем его в DS1307."
+            - ds1307_local.write_time:
+                id: rtc_time
+          else:
+            - logger.log: "Сервер недоступен. Берём время из DS1307."
+            - ds1307_local.read_time:
+                id: rtc_time
+      # 3. Принудительно измеряем все датчики
+      - component.update: bme280_component
+      - component.update: battery_voltage
+      - component.update: wifi_signal_db
+      # Пауза, чтобы новые значения успели уйти на сервер
+      - delay: 3s
+      # 4. Читаем старые данные из RAM DS1307 (адреса 0x08..0x0F)
+      - lambda: |-
+          // Формат данных совпадает с Arduino-прошивкой (AllData_t):
+          //   int16 LE температура*10, uint16 LE влажность*10,
+          //   uint16 LE давление (мм.рт.ст.), uint16 LE ошибки
+          uint8_t reg = 0x08;
+          uint8_t data[8] = {0};
+          id(i2c_bus).write(0x68, &reg, 1);
+          id(i2c_bus).read(0x68, data, 8);
+          int16_t t = int16_t(data[0]) | (int16_t(data[1]) << 8);
+          uint16_t h = uint16_t(data[2]) | (uint16_t(data[3]) << 8);
+          uint16_t p = uint16_t(data[4]) | (uint16_t(data[5]) << 8);
+          id(has_old_data) = (t >= -400) && (t <= 800) && (h > 0) && (h <= 1000) && (p > 600) && (p < 900);
+          if (id(has_old_data)) {
+            id(old_temperature) = t / 10.0f;
+            id(old_humidity) = h / 10.0f;
+            id(old_pressure) = p;
+          }
+      # 5. Обновляем экран, если не ночь и кто-то есть дома
+      - if:
+          condition:
+            lambda: |-
+              auto time = id(MyDateTime).now();
+              // Ночной режим экономии АКБ: 23:00..04:00
+              if (time.is_valid() && time.year >= 2025) {
+                int hour = time.hour;
+                if (hour >= 23 || hour < 4) return false;
+              }
+              // Флагу доверяем только при доступном сервере
+              if (api_is_connected() && !id(people_at_home).state) return false;
+              return true;
+          then:
+            - logger.log: "Обновляем экран."
+            - component.update: my_display
+          else:
+            - logger.log: "Экран не обновляем (ночь или никого нет дома)."
+      # 6. Сохраняем текущие данные в RAM DS1307 для следующего включения
+      - lambda: |-
+          if (!std::isnan(id(bme_temperature).state) && !std::isnan(id(bme_humidity).state) &&
+              !std::isnan(id(bme_pressure_mmhg).state)) {
+            int16_t t = int16_t(roundf(id(bme_temperature).state * 10.0f));
+            uint16_t h = uint16_t(roundf(id(bme_humidity).state * 10.0f));
+            uint16_t p = uint16_t(roundf(id(bme_pressure_mmhg).state));
+            uint8_t data[9] = {0x08,
+                               uint8_t(t & 0xFF), uint8_t((t >> 8) & 0xFF),
+                               uint8_t(h & 0xFF), uint8_t((h >> 8) & 0xFF),
+                               uint8_t(p & 0xFF), uint8_t((p >> 8) & 0xFF),
+                               0x00, 0x00};
+            id(i2c_bus).write(0x68, data, 9);
+          }
+      # 7. Выключение питания (или ожидание при обновлении прошивки)
+      - if:
+          condition:
+            lambda: 'return id(NoPowerOff).state;'
+          then:
+            - logger.log: "Режим обновления прошивки: остаёмся включёнными."
+            - wait_until:
+                condition:
+                  lambda: 'return !id(NoPowerOff).state;'
+                timeout: 3600s  # защита: через час всё равно выключаемся
+            - logger.log: "Выключаем питание."
+            - switch.toggle: Done_Out
+          else:
+            - switch.toggle: Done_Out

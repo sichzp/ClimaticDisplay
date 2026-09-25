@@ -1,0 +1,46 @@
+# ============================================================
+#  .gitattributes — правила работы Git с файлами
+# ============================================================
+#  Текстовые файлы хранятся в репозитории с переводами строк LF
+#  и выгружаются тоже с LF. Это убирает «вечные изменения» и
+#  конфликты, когда проект открывают на Windows, Linux и macOS.
+# ============================================================
+
+* text=auto
+
+# --- Исходники и текстовые файлы: всегда LF ---
+*.c             text eol=lf
+*.cpp           text eol=lf
+*.h             text eol=lf
+*.hpp           text eol=lf
+*.ino           text eol=lf
+*.py            text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+*.nc            text eol=lf
+*.gitignore     text eol=lf
+*.gitattributes text eol=lf
+
+# --- Бинарные файлы: Git не должен их трогать и показывать diff ---
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.bmp   binary
+*.gif   binary
+*.psd   binary
+*.pdf   binary
+*.ttf   binary
+*.otf   binary
+*.zip   binary
+
+# --- Altium: документы платы и схемы — бинарный формат OLE ---
+*.PcbDoc binary
+*.SchDoc binary
+*.PcbLib binary
+*.SchLib binary
+*.IntLib binary
+
+# --- FreeCAD: документ — это zip-архив ---
+*.FCStd binary
